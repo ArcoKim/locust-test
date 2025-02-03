@@ -1,3 +1,4 @@
 locust
 faker
 pandas
+boto3
