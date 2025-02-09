@@ -36,7 +36,7 @@ class MonitorThread(threading.Thread):
         while self.running:
             instance_count = get_instance_count()
             print(f"[Monitor] Running EC2 Instances: {instance_count}")
-            instance_list.append(instance_count)
+            instance_list.append((instance_count,))
             time.sleep(self.interval)
 
     def stop(self):

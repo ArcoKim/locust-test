@@ -2,3 +2,4 @@ locust
 faker
 pandas
 boto3
+openpyxl
