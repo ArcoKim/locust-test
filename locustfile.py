@@ -5,7 +5,7 @@ import random
 import threading
 import boto3
 import os
-import gevent
+import time
 
 fake = Faker()
 
@@ -17,22 +17,61 @@ write_idx = 500000
 read_idx = 0
 index_lock = threading.Lock()
 
+instance_list = []
+ec2 = boto3.client("ec2", aws_access_key_id=os.getenv("access_key"), aws_secret_access_key=os.getenv("secret_access_key"), region_name="ap-northeast-2")
+ssm = boto3.client("ssm")
+
+def get_instance_count():
+    response = ec2.describe_instances(Filters=[{"Name": "instance-state-name", "Values": ["running"]}])
+    instances = sum(len(reservation["Instances"]) for reservation in response["Reservations"])
+    return instances
+
+class MonitorThread(threading.Thread):
+    def __init__(self, interval=300):
+        super().__init__()
+        self.interval = interval
+        self.running = True
+    
+    def run(self):
+        while self.running:
+            instance_count = get_instance_count()
+            print(f"[Monitor] Running EC2 Instances: {instance_count}")
+            instance_list.append(instance_count)
+            time.sleep(self.interval)
+
+    def stop(self):
+        self.running = False
+
+monitor_thread = None
+
+@events.test_start.add_listener
+def on_test_start(environment, **kwargs):
+    global monitor_thread
+    monitor_thread = MonitorThread()
+    monitor_thread.start()
+    print("[Monitor] EC2 Instance Monitoring Started.")
+
+@events.quitting.add_listener
+def on_quitting(environment, **kwargs):
+    global monitor_thread
+    if monitor_thread:
+        monitor_thread.stop()
+        monitor_thread.join()
+        print("[Monitor] EC2 Instance Monitoring Stopped.")
+
+    df = pd.DataFrame.from_records(instance_list)
+    df.to_excel("instances.xlsx")
+
+    s3 = boto3.client("s3")
+    metrics = ["exceptions", "failures", "stats_history", "stats"]
+    username = os.getenv("username")
+
+    for metric in metrics:
+        csv = f"{username}_{metric}.csv"
+        s3.upload_file(csv, "student-monitoring", f"{username}/{csv}")
+    s3.upload_file("instances.xlsx", "student-monitoring", f"{username}/instances.xlsx")
+
 class TestUser(FastHttpUser):
-    def on_start(self):
-        self.ssm = boto3.client("ssm")
-        gevent.spawn(self.update_host_from_ssm)
-
-    def update_host_from_ssm(self):
-        while True:
-            response = self.ssm.get_parameter(
-                Name=f"/{os.getenv("eventId")}/{os.getenv("username")}",
-                WithDecryption=True
-            )
-            new_host = response["Parameter"]["Value"]
-            if new_host != self.host:
-                self.host = new_host
-            gevent.sleep(60)
-
     @task(2)
     def token(self):
         self.client.post("/v1/token?id=world&uuid=skills", json={"length": 2048}, name="/v1/token")
@@ -79,13 +118,3 @@ class TestUser(FastHttpUser):
             "gender": 'M',
             "hire_date": "2024-12-19"
         }, headers={"User-Agent": "bot-attack"}, name="abnormal")
-
-@events.quitting.add_listener
-def on_quitting(environment, **kwargs):
-    s3 = boto3.client("s3")
-    metrics = ["exceptions", "failures", "stats_history", "stats"]
-    username = os.getenv("username")
-
-    for metric in metrics:
-        csv = f"{username}_{metric}.csv"
-        s3.upload_file(csv, "student-monitoring", f"{username}/{csv}")
