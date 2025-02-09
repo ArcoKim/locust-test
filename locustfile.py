@@ -13,6 +13,9 @@ emp = pd.read_csv('data/employees.csv')
 first_names = emp["first_name"].tolist()
 last_names = emp["last_name"].tolist()
 
+eventId = os.getenv("eventId")
+username = os.getenv("username")
+
 write_idx = 500000
 read_idx = 0
 index_lock = threading.Lock()
@@ -20,6 +23,20 @@ index_lock = threading.Lock()
 instance_list = []
 ec2 = boto3.client("ec2", aws_access_key_id=os.getenv("access_key"), aws_secret_access_key=os.getenv("secret_access_key"), region_name="ap-northeast-2")
 ssm = boto3.client("ssm")
+
+def get_hosts_from_ssm(parameter_name):
+    response = ssm.get_parameter(Name=parameter_name)
+    return response["Parameter"]["Value"]
+
+SHARED_HOST = get_hosts_from_ssm(f"/{eventId}/{username}")
+
+def update_hosts_periodically():
+    global SHARED_HOST
+    while True:
+        time.sleep(60)
+        SHARED_HOST = get_hosts_from_ssm(f"/{eventId}/{username}")
+
+threading.Thread(target=update_hosts_periodically, daemon=True).start()
 
 def get_instance_count():
     response = ec2.describe_instances(Filters=[{"Name": "instance-state-name", "Values": ["running"]}])
@@ -74,7 +91,7 @@ def on_quitting(environment, **kwargs):
 class TestUser(FastHttpUser):
     @task(2)
     def token(self):
-        self.client.post("/v1/token?id=world&uuid=skills", json={"length": 2048}, name="/v1/token")
+        self.client.post(SHARED_HOST + "/v1/token?id=world&uuid=skills", json={"length": 2048}, name="/v1/token")
 
     @task(2)
     def write_employee(self):
@@ -87,7 +104,7 @@ class TestUser(FastHttpUser):
         first_name = fake.first_name()
         last_name = fake.last_name()
 
-        self.client.post("/v1/employee?id=world&uuid=skills", json={
+        self.client.post(SHARED_HOST + "/v1/employee?id=world&uuid=skills", json={
             "emp_no": write_now,
             "birth_date": birth_date.isoformat(),
             "first_name": first_name,
@@ -106,11 +123,11 @@ class TestUser(FastHttpUser):
             read_now = read_idx
             read_idx += 1
 
-        self.client.get(f"/v1/employee?first_name={first_names[read_now]}&last_name={last_names[read_now]}&id=world&uuid=skills", name="/v1/employee")
+        self.client.get(SHARED_HOST + f"/v1/employee?first_name={first_names[read_now]}&last_name={last_names[read_now]}&id=world&uuid=skills", name="/v1/employee")
 
     @task(1)
     def bad_token(self):
-        self.client.post("/v1/employee?id=world&uuid=skills", json={
+        self.client.post(SHARED_HOST + "/v1/employee?id=world&uuid=skills", json={
             "emp_no": 1,
             "birth_date": "2024-12-19",
             "first_name": "attack",
